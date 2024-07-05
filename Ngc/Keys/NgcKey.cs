@@ -97,7 +97,7 @@ namespace Shwmae.Ngc.Keys {
                 } else {
                     return new NgcKey(user, path);
                 }
-            }catch(CryptographicException ce) {
+            }catch(CryptographicException) {
                 return default;
             }
         }

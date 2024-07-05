@@ -5,7 +5,7 @@
     <TargetFramework>net480</TargetFramework>
 	<LangVersion>9.0</LangVersion>
 	<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-	<Nullable>enable</Nullable>
+	<Nullable>disable</Nullable>
   </PropertyGroup>
 
   <ItemGroup>

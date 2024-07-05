@@ -181,7 +181,7 @@ namespace Shwmae {
         }
 
   
-        static async void Run(object options) {
+        static void Run(object options) {
 
             BaseOptions baseOptions = (BaseOptions)options;
 

@@ -4,67 +4,77 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using DPAPI;
+using NLog.LayoutRenderers.Wrappers;
 
 namespace Shwmae.Ngc.Keys.Crypto
 {
     public class NgcSoftwareKeyCrypto : KeyCrypto
     {
+        public int Rounds { get; private set; }
+        public byte[] Salt { get; private set; }
+        public CNGKeyBlob KeyBlob { get; private set; }
+        public MasterKey MasterKey { get; private set; }
 
-        CNGKeyBlob keyBlob;
-
-        public NgcSoftwareKeyCrypto(string path)
-        {
-            keyBlob = CNGKeyBlob.Parse(path);
+        public NgcSoftwareKeyCrypto(string path){
+            KeyBlob = CNGKeyBlob.Parse(path);
         }
 
-        CngKey DecryptKey(NgcPin pin, IMasterKeyProvider masterKeyProvider)
-        {
+        public NgcSoftwareKeyCrypto(CNGKeyBlob keyBlob) {
+            KeyBlob = keyBlob;
+        }
 
-            var mk = masterKeyProvider.GetMasterKey(keyBlob.PrivateKey.GuidMasterKey);
+        public void DecryptPrivateProperties(IMasterKeyProvider masterKeyProvider) {
 
-            var privatePropertiesBlob = keyBlob.PrivateProperties.Decrypt(mk.Key, Encoding.UTF8.GetBytes("6jnkd5J3ZdQDtrsu\0"));
+            MasterKey = masterKeyProvider.GetMasterKey(KeyBlob.PrivateKey.GuidMasterKey);
 
-            byte[] entropy = null;
+            var privatePropertiesBlob = KeyBlob.PrivateProperties.Decrypt(MasterKey.Key, Encoding.UTF8.GetBytes("6jnkd5J3ZdQDtrsu\0"));
 
-            if (privatePropertiesBlob.Length == 0)
-            {
+            if (privatePropertiesBlob.Length == 0) {
                 throw new ArgumentException("keyBlob does not contain private key properties");
             }
 
             var privateProperties = CNGProperty.Parse(new BinaryReader(new MemoryStream(privatePropertiesBlob)), (uint)privatePropertiesBlob.Length);
             var uiPolicy = privateProperties.FirstOrDefault(p => p.Name == "UI Policy");
 
-            if (uiPolicy.Equals(default))
-            {
+            if (uiPolicy.Equals(default)) {
                 throw new ArgumentException("keyBlob does not contain UI policy");
             }
 
             var flags = BitConverter.ToInt32(uiPolicy.Value, 4);
 
-            if ((flags & 0x3) >= 1)
-            {
+            if ((flags & 0x3) >= 1) {
 
                 var saltProp = privateProperties.FirstOrDefault(p => p.Name == "NgcSoftwareKeyPbkdf2Salt");
                 var roundsProp = privateProperties.FirstOrDefault(p => p.Name == "NgcSoftwareKeyPbkdf2Round");
 
-                if (default(CNGProperty).Equals(saltProp) || default(CNGProperty).Equals(roundsProp))
-                {
-                    entropy = pin.DeriveEntropy();
-                }
-                else
-                {
-                    var rounds = BitConverter.ToInt32(roundsProp.Value, 0);
-                    entropy = pin.DeriveEntropy(saltProp.Value, rounds);
-                }
-            };
+                Rounds = BitConverter.ToInt32(roundsProp.Value, 0);
+                Salt = saltProp.Value;
+            }
+        }
 
-            return CngKey.Import(keyBlob.PrivateKey.Decrypt(mk.Key, entropy), CngKeyBlobFormat.GenericPrivateBlob);
+        byte[] DecryptKey(NgcPin pin, IMasterKeyProvider masterKeyProvider) {
+
+            DecryptPrivateProperties(masterKeyProvider);
+
+            byte[] entropy;
+
+            if (Salt == null) {
+                entropy = pin.DeriveEntropy();
+            } else {
+                entropy = pin.DeriveEntropy(Salt, Rounds);
+            }
+
+            return KeyBlob.PrivateKey.Decrypt(MasterKey.Key, entropy);
+        }
+
+        CngKey LoadKey(NgcPin pin, IMasterKeyProvider masterKeyProvider){     
+            return CngKey.Import(DecryptKey(pin, masterKeyProvider), CngKeyBlobFormat.GenericPrivateBlob, CngProvider.MicrosoftSoftwareKeyStorageProvider);
         }
 
         public byte[] Sign(byte[] data, NgcPin pin, IMasterKeyProvider masterKeyProvider, HashAlgorithmName alg)
         {
 
-            using (var cngKey = DecryptKey(pin, masterKeyProvider))
+            using (var cngKey = LoadKey(pin, masterKeyProvider))
             {
 
                 if (cngKey.Algorithm == CngAlgorithm.Rsa)
@@ -87,7 +97,7 @@ namespace Shwmae.Ngc.Keys.Crypto
         public byte[] Decrypt(byte[] data, NgcPin pin, IMasterKeyProvider masterKeyProvider)
         {
 
-            using (var cngKey = DecryptKey(pin, masterKeyProvider))
+            using (var cngKey = LoadKey(pin, masterKeyProvider))
             {
                 if (cngKey.Algorithm == CngAlgorithm.Rsa)
                 {
@@ -103,6 +113,20 @@ namespace Shwmae.Ngc.Keys.Crypto
                     throw new NotImplementedException($"Algorithm {cngKey.Algorithm} not currently supported");
                 }
             }
+        }
+
+        public byte[] Export(NgcPin pin, IMasterKeyProvider masterKeyProvider) {
+
+            var cngKey = DecryptKey(pin, masterKeyProvider);
+
+            var keyParams = new CngKeyCreationParameters {
+                ExportPolicy = CngExportPolicies.AllowPlaintextExport,
+                KeyCreationOptions = CngKeyCreationOptions.None ,
+                Provider = CngProvider.MicrosoftSoftwareKeyStorageProvider
+            };
+            keyParams.Parameters.Add(new CngProperty(CngKeyBlobFormat.GenericPrivateBlob.Format, cngKey, CngPropertyOptions.None));
+            var key = CngKey.Create(CngAlgorithm.Rsa, null, keyParams);
+            return key.Export(CngKeyBlobFormat.Pkcs8PrivateBlob);
         }
     }
 }

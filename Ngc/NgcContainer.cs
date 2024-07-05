@@ -11,6 +11,7 @@ using NtApiDotNet;
 using DPAPI;
 using Shwmae.Ngc.Keys;
 using Shwmae.Ngc.Protectors;
+using Shwmae.Vault;
 
 namespace Shwmae.Ngc { 
   
@@ -42,7 +43,8 @@ namespace Shwmae.Ngc {
 
         public static IEnumerable<NgcContainer> GetAll() {
             return Directory.GetDirectories(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), @"ServiceProfiles\LocalService\AppData\Local\Microsoft\Ngc"))
-                .Select(userProtector => new NgcContainer(userProtector));
+                  .Where(container => Guid.TryParse(System.IO.Path.GetFileName(container), out _))
+                  .Select(container => new NgcContainer(container));
         }
 
         dynamic ResponseToObject(HttpResponseMessage response) {
@@ -73,6 +75,36 @@ namespace Shwmae.Ngc {
             }
 
             return encryptedKey.Decrypt(masterKey.Key);
+        }
+
+        public NgcProtector GetFirstDecryptedProtector(string pin, IEnumerable<DecryptedCredential> decryptedVaultCreds, IMasterKeyProvider masterKeyProvider) {
+
+            foreach (var protector in Protectors) {
+
+                if (protector is BioProtector bioProtector) {
+
+                    if (bioProtector.BioEncryptionType == BioEncryptionType.Aes) {
+                        foreach (var bioKey in decryptedVaultCreds.Where(dc => dc is BioCredential && dc.Identity == bioProtector.User.Sid)) {
+                            try {
+                                bioProtector.Decrypt(((BioCredential)bioKey).ProtectorKey);
+                                return protector;
+                            } catch (CryptographicException) {
+
+                            }
+                        }
+                    }
+
+                } else if (protector is PinProtector pinProtector && pin != null) {
+
+                    if (pinProtector.IsSoftware)
+                        pinProtector.ProcessSoftwareKey(masterKeyProvider);
+
+                    protector.Decrypt(Encoding.Unicode.GetBytes(pin));
+                    return protector;
+                }
+            }
+
+            return null;
         }
     }
 }

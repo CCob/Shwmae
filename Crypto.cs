@@ -9,6 +9,8 @@ using System.Linq;
 using PBKDF2;
 using NtApiDotNet;
 using NtApiDotNet.Utilities.Security;
+using DPAPI;
+using Shwmae.Ngc;
 
 namespace Shwmae {
     public class Crypto {
@@ -70,6 +72,41 @@ namespace Shwmae {
             using (var hmac = new HMACSHA1(hmacData)) {
                 return hmac.ComputeHash(encodedSidNull);
             }
+        }
+
+        static byte[] DecryptRSAKey(CNGKeyBlob keyBlob, MasterKey masterKey, NgcPin pin) {
+
+            var privatePropertiesBlob = keyBlob.PrivateProperties.Decrypt(masterKey.Key, Encoding.UTF8.GetBytes("6jnkd5J3ZdQDtrsu\0"));
+
+            byte[] entropy = null;
+
+            if (privatePropertiesBlob.Length == 0) {
+                throw new ArgumentException("keyBlob does not contain private key properties");
+            }
+
+            var privateProperties = CNGProperty.Parse(new BinaryReader(new MemoryStream(privatePropertiesBlob)), (uint)privatePropertiesBlob.Length);
+            var uiPolicy = privateProperties.FirstOrDefault(p => p.Name == "UI Policy");
+
+            if (uiPolicy.Equals(default)) {
+                throw new ArgumentException("keyBlob does not contain UI policy");
+            }
+
+            var flags = BitConverter.ToInt32(uiPolicy.Value, 4);
+
+            if ((flags & 0x3) >= 1) {
+
+                var saltProp = privateProperties.FirstOrDefault(p => p.Name == "NgcSoftwareKeyPbkdf2Salt");
+                var roundsProp = privateProperties.FirstOrDefault(p => p.Name == "NgcSoftwareKeyPbkdf2Round");
+
+                if (default(CNGProperty).Equals(saltProp) || default(CNGProperty).Equals(roundsProp)) {
+                    entropy = pin.DeriveEntropy();
+                } else {
+                    var rounds = BitConverter.ToInt32(roundsProp.Value, 0);
+                    entropy = pin.DeriveEntropy(saltProp.Value, rounds);
+                }
+            };
+
+            return keyBlob.PrivateKey.Decrypt(masterKey.Key, entropy);
         }
     }
 }

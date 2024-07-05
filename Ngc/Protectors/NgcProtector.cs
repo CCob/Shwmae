@@ -12,7 +12,7 @@ namespace Shwmae.Ngc.Protectors {
         Bio = 2,
         Recovery = 3,
         PreBoot = 5,
-        ExternalDevice = 6
+        CompanionDevice = 6
     }
 
     public abstract class NgcProtector
@@ -20,7 +20,7 @@ namespace Shwmae.Ngc.Protectors {
 
         public NgcContainer User { get; protected set; }
         public byte[] EncryptedProtector { get; protected set; }
-        public byte[] External { get; protected set; }
+        public byte[] ExternalPin { get; protected set; }
         public byte[] DecryptPin { get; protected set; }
         public byte[] SignPin { get; protected set; }
         public abstract ProtectorType ProtectorType { get; }
@@ -63,7 +63,7 @@ namespace Shwmae.Ngc.Protectors {
             var decPinLen = br.ReadUInt32();
             var signPinLen = br.ReadUInt32();
 
-            External = br.ReadBytes((int)unkPinLen);
+            ExternalPin = br.ReadBytes((int)unkPinLen);
             DecryptPin = br.ReadBytes((int)decPinLen);
             SignPin = br.ReadBytes((int)signPinLen);
         }

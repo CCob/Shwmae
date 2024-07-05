@@ -40,7 +40,7 @@ namespace Shwmae.Ngc{
 
         public byte[] DeriveEntropy(byte[] salt, int rounds) {
             var pbkdf2 = new Pbkdf2(HMAC.Create("HMACSHA256"), Encode(false), salt, rounds);
-            var pbkdf2Output = Encoding.Unicode.GetBytes(Helpers.ByteArrayToString(pbkdf2.GetBytes(32, "sha256"), true));
+            var pbkdf2Output = Encoding.Unicode.GetBytes(pbkdf2.GetBytes(32, "sha256").Hex(true));
             return initialEntropy.Concat(SHA512.Create().ComputeHash(pbkdf2Output)).ToArray();
         }
 

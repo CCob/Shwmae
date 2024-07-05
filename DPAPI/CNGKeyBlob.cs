@@ -71,6 +71,24 @@ namespace DPAPI {
             return Parse(new BinaryReader(new FileStream(fileName, FileMode.Open, FileAccess.Read)));
         }
 
+        public static CNGKeyBlob Find(string guid) {
+            return Find(guid, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Microsoft\\Crypto\\Keys"));
+        }
+
+        public static CNGKeyBlob Find(string guid, string basePath) {
+
+            var files = Directory.EnumerateFiles(basePath);
+
+            foreach(var file in files) {
+                var blob = Parse(file);
+                if(blob.Name == guid) {
+                    return blob;
+                }               
+            }
+
+            return null;
+        }
+
         public static CNGKeyBlob Parse(BinaryReader br) {
             var hdr = br.ReadStruct<CNGKeyHeader>();
             return new CNGKeyBlob {

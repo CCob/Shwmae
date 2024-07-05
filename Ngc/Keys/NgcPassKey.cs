@@ -23,6 +23,7 @@ namespace Shwmae.Ngc.Keys
         public byte[] UserId { get; private set; }
         public byte[] PublicKey { get; private set; }
         public byte[] CredentialId { get; private set; }
+        public byte[] Icon { get; private set; }
         public uint SignCount { get; private set; }
 
         string signCountPath;
@@ -34,8 +35,7 @@ namespace Shwmae.Ngc.Keys
             var passkeyInfo = File.ReadAllBytes(Path.Combine(path, "7.dat"));
             var passkeyObj = Cbor.Deserialize<CborObject>(passkeyInfo);
 
-            if (passkeyObj.TryGetValue(CborValueConvert.ToValue(2), out var rpInfo))
-            {
+            if (passkeyObj.TryGetValue(CborValueConvert.ToValue(2), out var rpInfo)){
                 RpId = StripQuotes(((CborObject)rpInfo)[CborValueConvert.ToValue("id")].ToString());
             }
 
@@ -55,13 +55,16 @@ namespace Shwmae.Ngc.Keys
 
             using (var key = CngKey.Open(KeyId, new CngProvider(Provider))) {
 
+                byte[] rawKey = null;
+
                 if (key.AlgorithmGroup == CngAlgorithmGroup.Rsa) {
                     PublicKey = key.Export(CngKeyBlobFormat.GenericPublicBlob);
+                    rawKey = PublicKey.Skip(0x18).ToArray();
                 } else if (key.AlgorithmGroup == CngAlgorithmGroup.ECDsa) {
                     PublicKey = key.Export(CngKeyBlobFormat.EccPublicBlob);
-                }
-                
-                var rawKey = PublicKey.Skip(8).ToArray();
+                    rawKey = PublicKey.Skip(8).ToArray();
+                }                
+               
                 CredentialId = SHA256.Create().ComputeHash(rawKey);                
             }
         }

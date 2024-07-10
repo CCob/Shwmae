@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Dynamic;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -34,7 +35,8 @@ namespace Shwmae {
 
         public WebAuthnHttpListener(int port) {
             handlers = new Dictionary<Regex, Func<HttpListenerRequest, HttpListenerResponse, Task>> {
-                {new Regex("/challenge"), new Func<HttpListenerRequest, HttpListenerResponse, Task>(HandleChallenge) }
+                {new Regex("/challenge"), new Func<HttpListenerRequest, HttpListenerResponse, Task>(HandleChallenge) },
+                {new Regex("/keys"), new Func<HttpListenerRequest, HttpListenerResponse, Task>(HandleKeys) }
             };
             this.port = port;
         }
@@ -69,8 +71,39 @@ namespace Shwmae {
             response.StatusCode = 404;
         }
 #pragma warning restore CS1998 // Async method lacks 'await' operators and will run synchronously
+        async Task HandleKeys(HttpListenerRequest request, HttpListenerResponse response) {
 
-  
+            var results = new List<dynamic>();
+
+            using (var ctx = Utils.Impersonate("Ngc")) {
+                var passKeys = Containers
+                    .SelectMany(c => c.Keys.OfType<NgcPassKey>());
+                    
+                foreach (NgcPassKey passKey in passKeys) {
+
+                    var passKeyObj = (dynamic)new ExpandoObject();
+
+                    passKeyObj.RpId = passKey.RpId;
+                    passKeyObj.Username = passKey.UserName;
+                    passKeyObj.DisplayName = passKey.DisplayName;
+                    passKeyObj.CredentialId = Utils.Base64Url(passKey.CredentialId);
+                    passKeyObj.SignCount = passKey.SignCount;
+
+                    results.Add(passKeyObj);
+                }                                           
+            }
+
+            var responseBody = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(results,
+                new JsonSerializerSettings {
+                    ContractResolver = new CamelCasePropertyNamesContractResolver()
+                }));
+
+            response.ContentType = "application/json";
+            response.StatusCode = 200;
+            response.ContentLength64 = responseBody.Length;
+            await response.OutputStream.WriteAsync(responseBody, 0, responseBody.Length);
+        }
+
         async Task HandleChallenge(HttpListenerRequest request, HttpListenerResponse response) {
 
             var body = await new StreamReader(request.InputStream).ReadToEndAsync();

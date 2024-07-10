@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+  <head>
+    <meta charset="utf-8">
+    <meta name = "viewport" content = "width=device-width, initial-scale = 1.0">
+    <meta http-equiv = "X-UA-Compatible" content = "ie=edge">
+    <title>Shwmae Chrome Extension</title>
+    <link href = "style.css" rel = "stylesheet" type = "text/css"> 
+    <link href = "css/bootstrap.min.css" rel = "stylesheet" type = "text/css">   
+  </head>
+  <body>
+
+    <nav class="navbar navbar-light bg-primary">
+      <span class="navbar-brand mb-0 h1">Shwmae WebAuthn Proxy</span>
+    </nav>
+
+    <div id="cred-holder"></div>
+
+    <hr/>
+
+    <form id="options" class="p-2">
+        <div class="form-group row">
+          <label id="serverHelp" for="server" class="col-sm-3 col-form-label">Listener address</label>
+          <div class="col-sm-9">
+            <input type="text" class="form-control input-sm" id="server" placeholder="http://1.2.3.5:8000">
+          </div>
+        </div>        
+        <button type="submit" class="btn btn-primary">Save</button>
+    </form>
+
+    <hr/>
+
+    <script src="js/jquery.min.js"></script>
+    <script src="js/bootstrap.bundle.min.js"></script>
+    <script src="scripts.js"></script>    
+  </body>
+</html>

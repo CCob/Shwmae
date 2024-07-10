@@ -59,8 +59,10 @@ namespace Shwmae.Ngc.Keys
 
                 if (key.AlgorithmGroup == CngAlgorithmGroup.Rsa) {
                     PublicKey = key.Export(CngKeyBlobFormat.GenericPublicBlob);
+                    //skip BCRYPT_RSAKEY_BLOB header size
                     rawKey = PublicKey.Skip(0x18).ToArray();
                 } else if (key.AlgorithmGroup == CngAlgorithmGroup.ECDsa) {
+                    //skip BCRYPT_ECCKEY_BLOB header size
                     PublicKey = key.Export(CngKeyBlobFormat.EccPublicBlob);
                     rawKey = PublicKey.Skip(8).ToArray();
                 }                

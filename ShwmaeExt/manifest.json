@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "Shwmae WebAuthn Proxy",
+  "version": "0.1",
+  "author": "@_EthicalChaos_",
+  "description": "Forwards WebAuthn assertion requests to a compromised host running the Shwmae Windows Hello abuse tool",
+  "permissions": [
+    "storage"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"       
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [{
+      "resources" : ["webauthn-inject.js"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type" : "module"    
+  },
+  "action": {
+    "default_icon": {"32": "logo.png"},
+    "default_popup": "index.html",
+    "default_title": "A tooltip popup description when you hover over the Chrome Extension icon."
+  },
+  "externally_connectable": {
+    "matches": ["https://*/*"]
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+   }
+}

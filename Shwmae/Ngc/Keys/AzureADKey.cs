@@ -74,7 +74,7 @@ namespace Shwmae.Ngc.Keys {
                 Email = match.Groups[3].Value;                
             }  
             
-            var cngKey = CngKey.Open(KeyId, new CngProvider(Provider), CngKeyOpenOptions.Silent);
+            var cngKey = CngKey.Open(KeyId, new CngProvider(Provider));
             AzureKid = Convert.ToBase64String(new SHA256Managed().ComputeHash(cngKey.Export(CngKeyBlobFormat.GenericPublicBlob)));                        
         }
 

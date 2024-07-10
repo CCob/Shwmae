@@ -30,6 +30,7 @@ namespace Shwmae {
             foreach (var ngcContainer in ngcContainers) {
 
                 Console.WriteLine($"\n{ngcContainer.Sid.Name} ({ngcContainer.Sid})\n");
+                Console.WriteLine($"  Container Id          : {ngcContainer.Id}");
                 Console.WriteLine($"  Provider              : {ngcContainer.Provider}");
 
                 if (ngcContainer.RecoveryKey != null) {

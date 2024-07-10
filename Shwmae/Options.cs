@@ -45,12 +45,23 @@ namespace Shwmae {
 
     [Verb("prt", HelpText = "Obtain an Entra PRT and partial TGT usable with Rubeus")]
     class PrtOptions : BaseOptions {
-        [Option('g', "generate-keys", Required = false, HelpText = "Generate a new random context and derived key using the Azure device transport certificate")]
-        public bool GenerateKeys { get; set; }
+        [Option('r', "renew", Required = false, HelpText = "Generate a new random context and derived key using the Azure device transport certificate")]
+        public bool Renew { get; set; }
+
+        [Option("kdfv1", Required = false, HelpText = "Use KDFv1 signing algorithm instead of KDFv2", Default = true)]
+        public bool KDFv1 { get; set; }
+
+        [Option("session-key", Required = false, HelpText = "Session key from initial PRT response")]
+        public string SessionKey { get; set; }
+
+        [Option("prt", Required = false, HelpText = "Existing PRT refresh token to renew")]
+        public string PRT { get; set; }
     }
 
     [Verb("webauthn", HelpText = "Create a webserver to proxy WebAuthn requests from an attacking host")]
     class WebAuthnOptions : BaseOptions {
+        [Option('p', "port", Required = false, HelpText = "Listener port for incoming requests via the Shwmae web extension", Default=8000)]
+        public int Port { get; set; }
 
     }
 }

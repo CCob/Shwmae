@@ -18,6 +18,7 @@ using Newtonsoft.Json;
 using System.Runtime.InteropServices;
 using Kerberos.NET.Crypto;
 using Kerberos.NET.Entities;
+using BCrypt;
 
 
 namespace Shwmae.Ngc.Keys {
@@ -60,7 +61,8 @@ namespace Shwmae.Ngc.Keys {
         public string PartialTGT { get; private set; }
         public string PRT { get; private set; }
         public string TransportKeyName { get; private set; }
-        public byte[] PopSessionKey { get; private set; }
+        public byte[] EncryptedPopSessionKey { get; private set; }
+        public byte[] DerivedSessionKey { get; private set; }
         public byte[] Ctx { get; private set;}
         public string PRTRefreshToken { get; private set; }
 
@@ -225,7 +227,11 @@ namespace Shwmae.Ngc.Keys {
             }
         }
 
-        public string RenewPRT(byte[] derivedKey) {
+        public void RenewPRT(string sessionKey, string refreshToken) {
+
+            Ctx = new byte[24];
+            PRTRefreshToken = refreshToken;
+            EncryptedPopSessionKey = Utils.Base64Url(sessionKey);
 
             var tokenURL = $"https://login.microsoftonline.com/{TenantId}/oauth2/token";
             var httpClient = new HttpClient();
@@ -234,33 +240,33 @@ namespace Shwmae.Ngc.Keys {
                 .Result.Content.ReadAsStringAsync().Result;
 
             var obj = JsonConvert.DeserializeObject<dynamic>(response);
-            string prtRenewJWT = null;
+            string prtRenewJWT = null;   
+            new Random().NextBytes(Ctx);
+            var dateTimeProvider = new UtcDateTimeProvider();
 
-            using (var ctx = Utils.Impersonate("Ngc")) {
-
-                var sessionCtx = new byte[24];
-                new Random().NextBytes(sessionCtx);
-                var dateTimeProvider = new UtcDateTimeProvider();
-
-                prtRenewJWT = JwtBuilder.Create()
-                            .AddHeader("ctx", Convert.ToBase64String(sessionCtx))
-                            .AddHeader("kdf_ver", "1")
-
-                            .AddClaim("request_nonce", (string)obj.Nonce)
-                            .AddClaim("scope", "openid aza ugs")
-                            .AddClaim("win_ver", "10.0.22621.2792")
-                            .AddClaim("grant_type", "refresh_token")
-                            .AddClaim("iss", "aad:brokerplugin")
-                            .AddClaim("group_sids", new string[] { })
-                            .AddClaim("client_id", "38aa3b87-a06d-4817-b275-7a316988d93b")
-                            .AddClaim("refresh_token", PRTRefreshToken)
-                            .AddClaim("previous_refresh_token", PRTRefreshToken)
-
-                            .WithAlgorithm(new HMACSHA256Algorithm())
-                            .WithDateTimeProvider(dateTimeProvider)
-                            .WithSecret(derivedKey)
-                            .Encode();
+            using (var impersonteCtx = Utils.Impersonate("SYSTEM")) {
+                DerivedSessionKey = GetDerivedKeyFromSessionKey(Convert.ToBase64String(Ctx), Utils.Base64Url(sessionKey));
             }
+
+            prtRenewJWT = JwtBuilder.Create()
+                        .AddHeader("ctx", Convert.ToBase64String(Ctx))
+                        .AddHeader("kdf_ver", "1")
+
+                        .AddClaim("request_nonce", (string)obj.Nonce)
+                        .AddClaim("scope", "openid aza ugs")
+                        .AddClaim("win_ver", "10.0.22621.2792")
+                        .AddClaim("grant_type", "refresh_token")
+                        .AddClaim("iss", "aad:brokerplugin")
+                        .AddClaim("group_sids", new string[] { })
+                        .AddClaim("client_id", "38aa3b87-a06d-4817-b275-7a316988d93b")
+                        .AddClaim("refresh_token", PRTRefreshToken)
+                        .AddClaim("previous_refresh_token", PRTRefreshToken)
+
+                        .WithAlgorithm(new HMACSHA256Algorithm())
+                        .WithDateTimeProvider(dateTimeProvider)
+                        .WithSecret(DerivedSessionKey)
+                        .Encode();
+        
      
             response = httpClient.PostAsync(tokenURL,
                 new FormUrlEncodedContent(new KeyValuePair<string, string>[] {
@@ -268,14 +274,29 @@ namespace Shwmae.Ngc.Keys {
                 new KeyValuePair<string, string>("windows_api_version", "2.2"),
                 new KeyValuePair<string, string>("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
                 new KeyValuePair<string, string>("client_info", "1"),
+                new KeyValuePair<string, string>("tgt", "true"),
                 }))
                 .Result.Content.ReadAsStringAsync().Result;
 
-            
-            return response;
+            var key = Jose.JWT.Headers(response);
+            var token = Jose.JweToken.FromString(response);
+
+            using (var impersonteCtx = Utils.Impersonate("SYSTEM")) {
+                DerivedSessionKey = GetDerivedKeyFromSessionKey((string)key["ctx"], Utils.Base64Url(sessionKey));
+            }
+
+            byte[] decryptedData;
+
+            if (token.Iv.Length == 12) {
+                decryptedData = AESGCM.GcmDecrypt(token.Ciphertext, DerivedSessionKey, token.Iv, token.AuthTag);
+            } else {
+                decryptedData = Utils.AesDecrypt(token.Ciphertext, DerivedSessionKey, token.Iv);
+            }
+
+            ParsePRT(Encoding.UTF8.GetString(decryptedData), true);
         }
 
-        public void GetPRT(NgcProtector ngcKeySet, IMasterKeyProvider masterKeyProvider, RSACng deviceKey, X509Certificate2 deviceCert) {
+        public void GetPRT(NgcProtector ngcKeySet, IMasterKeyProvider masterKeyProvider, RSACng deviceKey, X509Certificate2 deviceCert, bool useKDFv1) {
 
             var tokenURL = $"https://login.microsoftonline.com/{TenantId}/oauth2/token";
             var httpClient = new HttpClient();
@@ -297,49 +318,65 @@ namespace Shwmae.Ngc.Keys {
                     new KeyValuePair<string, string>("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
                     new KeyValuePair<string, string>("tgt", "true"),
                     }))
-                    .Result.Content.ReadAsStringAsync().Result;
-
-                PRT = response;
-                prt = JsonConvert.DeserializeObject<dynamic>(response);                
+                    .Result.Content.ReadAsStringAsync().Result;                             
             }
 
+            ParsePRT(response, false);           
+            return;
+        }
+
+        void ParsePRT(string response, bool renewal) {
+
+            PRT = response;
+            var prt = JsonConvert.DeserializeObject<dynamic>(response);
             PRTRefreshToken = prt["refresh_token"];
             var sessionKey = (string)prt.session_key_jwe;
-            var encryptedKey = Utils.Base64Url(sessionKey.Split(new char[] { '.' })[1]);
+
+            if (!renewal) {
+                EncryptedPopSessionKey = Utils.Base64Url(sessionKey.Split(new char[] { '.' })[1]);
+            }
+            
             var tgt_ad = JsonConvert.DeserializeObject<dynamic>((string)prt.tgt_ad);
-            var tgt_key = Jose.JWT.Headers((string)tgt_ad.clientKey);
-            var tgt_token = Jose.JweToken.FromString((string)tgt_ad.clientKey);
 
-            using (var impersonteCtx = Utils.Impersonate("SYSTEM")) {
+            if (tgt_ad != null) {
 
-                Ctx = new byte[24];
-                new Random().NextBytes(Ctx);
-                PopSessionKey = GetDerivedKeyFromSessionKey(Convert.ToBase64String(Ctx), encryptedKey);
+                using (var impersonteCtx = Utils.Impersonate("SYSTEM")) {
 
-                var tgtpopSessionKey = GetDerivedKeyFromSessionKey((string)tgt_key["ctx"], encryptedKey);
-                var decryptedTPMSessionKey = DecryptSessionKey(encryptedKey);                
-                var tgtSessionKey = Utils.AesDecrypt(tgt_token.Ciphertext, tgtpopSessionKey, tgt_token.Iv);
-                var tgtCrypto = CryptoService.CreateTransform(EncryptionType.AES256_CTS_HMAC_SHA1_96);
-                var asRep = KrbAsRep.DecodeApplication(Convert.FromBase64String((string)tgt_ad.messageBuffer));
-                var krbCred = tgtCrypto.Decrypt(asRep.EncPart.Cipher, new KerberosKey(tgtSessionKey), KeyUsage.EncAsRepPart);
-                var krbCredObj = KrbEncAsRepPart.DecodeApplication(krbCred);
+                    Ctx = new byte[24];
+                    new Random().NextBytes(Ctx);
+                    DerivedSessionKey = GetDerivedKeyFromSessionKey(Convert.ToBase64String(Ctx), EncryptedPopSessionKey);
+                    byte[] tgtSessionKey;
 
-                var krbCredInfo = new KrbCredInfo();
-                krbCredInfo.Key = new KrbEncryptionKey() { EType = EncryptionType.AES256_CTS_HMAC_SHA1_96, KeyValue = krbCredObj.Key.KeyValue, Usage = KeyUsage.EncAsRepPart };
-                krbCredInfo.Realm = krbCredObj.Realm;
-                krbCredInfo.AuthTime = krbCredObj.AuthTime;
-                krbCredInfo.StartTime = krbCredObj.StartTime;
-                krbCredInfo.EndTime = krbCredObj.EndTime;
-                krbCredInfo.SName = krbCredObj.SName;
-                krbCredInfo.RenewTill = krbCredObj.RenewTill;
-                krbCredInfo.PName = asRep.CName;
-                krbCredInfo.Flags = krbCredObj.Flags;
-                krbCredInfo.SRealm = krbCredObj.Realm;
+                    if (!renewal) {
+                        var tgt_key = Jose.JWT.Headers((string)tgt_ad.clientKey);
+                        var tgt_token = Jose.JweToken.FromString((string)tgt_ad.clientKey);
+                        var tgtpopSessionKey = GetDerivedKeyFromSessionKey((string)tgt_key["ctx"], EncryptedPopSessionKey);
+                        var decryptedTPMSessionKey = DecryptSessionKey(EncryptedPopSessionKey);
+                        tgtSessionKey = Utils.AesDecrypt(tgt_token.Ciphertext, tgtpopSessionKey, tgt_token.Iv);
+                    } else {
+                        tgtSessionKey = Convert.FromBase64String((string)tgt_ad.clientKey);
+                    }
 
-                PartialTGT = Convert.ToBase64String(KrbCred.WrapTicket(asRep.Ticket, krbCredInfo).EncodeApplication().ToArray());                             
-            }               
+                    var tgtCrypto = CryptoService.CreateTransform(EncryptionType.AES256_CTS_HMAC_SHA1_96);
+                    var asRep = KrbAsRep.DecodeApplication(Convert.FromBase64String((string)tgt_ad.messageBuffer));
+                    var krbCred = tgtCrypto.Decrypt(asRep.EncPart.Cipher, new KerberosKey(tgtSessionKey), KeyUsage.EncAsRepPart);
+                    var krbCredObj = KrbEncAsRepPart.DecodeApplication(krbCred);
 
-            return;
+                    var krbCredInfo = new KrbCredInfo();
+                    krbCredInfo.Key = new KrbEncryptionKey() { EType = EncryptionType.AES256_CTS_HMAC_SHA1_96, KeyValue = krbCredObj.Key.KeyValue, Usage = KeyUsage.EncAsRepPart };
+                    krbCredInfo.Realm = krbCredObj.Realm;
+                    krbCredInfo.AuthTime = krbCredObj.AuthTime;
+                    krbCredInfo.StartTime = krbCredObj.StartTime;
+                    krbCredInfo.EndTime = krbCredObj.EndTime;
+                    krbCredInfo.SName = krbCredObj.SName;
+                    krbCredInfo.RenewTill = krbCredObj.RenewTill;
+                    krbCredInfo.PName = asRep.CName;
+                    krbCredInfo.Flags = krbCredObj.Flags;
+                    krbCredInfo.SRealm = krbCredObj.Realm;
+
+                    PartialTGT = Convert.ToBase64String(KrbCred.WrapTicket(asRep.Ticket, krbCredInfo).EncodeApplication().ToArray());
+                }
+            }
         }
     }
 }

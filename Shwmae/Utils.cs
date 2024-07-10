@@ -161,7 +161,7 @@ namespace Shwmae {
             Assembly.Load("JWT");
             Assembly.Load("System.Text.Json");
             Assembly.Load("System.Memory");
-            //Assembly.Load("Microsoft.Bcl.AsyncInterfaces");
+            Assembly.Load("Microsoft.Bcl.AsyncInterfaces");
             Assembly.Load("System.Threading.Tasks.Extensions");
             Assembly.Load("System.Text.Encodings.Web");
             Assembly.Load("System.Buffers");

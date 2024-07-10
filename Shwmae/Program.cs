@@ -12,9 +12,6 @@ using Shwmae.Ngc;
 using Shwmae.Vault;
 using System.Linq;
 using CommandLine;
-using Shwmae.Ngc.Keys.Crypto;
-using NtApiDotNet.Utilities.Text;
-using Kerberos.NET.Crypto;
 
 namespace Shwmae {
     internal class Program {
@@ -185,6 +182,24 @@ namespace Shwmae {
             }
         }
 
+        static void PrintPRTInfo(AzureADKey aadKey) {
+
+            Console.WriteLine($"    Transport Key    : {aadKey.TransportKeyName}");
+
+            if (aadKey.PRT != null) {
+                var prtFile = $"{aadKey.Email}-{aadKey.TenantId}.prt";
+                File.WriteAllText(prtFile, aadKey.PRT);
+                Console.WriteLine($"    PRT              : {aadKey.PRTRefreshToken}");
+                Console.WriteLine($"    PRT Session Key  : {Utils.Base64Url(aadKey.EncryptedPopSessionKey)}");
+                Console.WriteLine($"    PRT Random Ctx   : {aadKey.Ctx.Hex()}");
+                Console.WriteLine($"    PRT Derived Key  : {aadKey.DerivedSessionKey.Hex()}");
+            }
+
+            if (aadKey.PartialTGT != null) {
+                Console.WriteLine($"    Partial TGT      :\n {aadKey.PartialTGT}");
+            }
+        }
+
   
         static void Run(object options) {
 
@@ -236,8 +251,8 @@ namespace Shwmae {
                     Console.WriteLine($"[!] Failed to load Azure device key: {ce.Message}");
                 }
 
-                if (baseOptions is WebAuthnOptions) {
-                    listener = new WebAuthnHttpListener(8000);
+                if (baseOptions is WebAuthnOptions webAuthnOptions) {
+                    listener = new WebAuthnHttpListener(webAuthnOptions.Port);
                     listener.Start();
                 }
             }
@@ -329,26 +344,36 @@ namespace Shwmae {
 
                 } else if (baseOptions is PrtOptions prtOptions) {
 
-                    if (prtOptions.GenerateKeys) {
+                    if (baseOptions.SID == null) {
+                        Console.WriteLine("[!] sid argument needs to be supplied to fetch a PRT");
+                        return;
+                    }
+
+                    var container = ngcContainers
+                        .Where(ngcc => ngcc.Sid.ToString() == baseOptions.SID && ngcc.Keys.Any(k => (k is AzureADKey)))
+                        .FirstOrDefault();
+
+                    if (container == default) {
+                        Console.WriteLine($"[!] Could not find Azure certificate for user with SID {baseOptions.SID}");
+                        return;
+                    }
+
+                    var aadKey = (AzureADKey)container.Keys.First(k => k is AzureADKey);
+
+
+                    if (prtOptions.Renew) {
+
+                        if(prtOptions.SessionKey == null || prtOptions.PRT == null) {
+                            Console.WriteLine("[!] Both session-key and prt argument required to renew");
+                            return;
+                        }
+
+                        ctx.Revert();
+                        aadKey.RenewPRT(prtOptions.SessionKey, prtOptions.PRT);
+                        PrintPRTInfo(aadKey);
 
                     } else {
-
-                        if (baseOptions.SID == null) {
-                            Console.WriteLine("[!] sid argument needs to be supplied to fetch a PRT");
-                            return;
-                        }
-
-                        var container = ngcContainers
-                            .Where(ngcc => ngcc.Sid.ToString() == baseOptions.SID && ngcc.Keys.Any(k => (k is AzureADKey)))
-                            .FirstOrDefault();
-
-                        if (container == default) {
-                            Console.WriteLine($"[!] Could not find Azure certificate for user with SID {baseOptions.SID}");
-                            return;
-                        }
-
-                        var aadKey = (AzureADKey)container.Keys.First(k => k is AzureADKey);
-
+                
                         Console.WriteLine($"[=] Found Azure key with UPN {aadKey.Email} and kid {aadKey.AzureKid}");
 
                         var protector = container.GetFirstDecryptedProtector(baseOptions.PIN, decryptedVaultCreds, systemKeyProvider);
@@ -362,22 +387,9 @@ namespace Shwmae {
 
                         ctx.Revert();
                         using (var systemCtx = Utils.Impersonate("SYSTEM")) {
-
-                            aadKey.GetPRT(protector, systemKeyProvider, deviceKey, deviceCert);
-                            Console.WriteLine($"    Transport Key    : {aadKey.TransportKeyName}");
-
-                            if (aadKey.PRT != null) {
-                                var prtFile = $"{aadKey.Email}-{aadKey.TenantId}.prt";
-                                File.WriteAllText(prtFile, aadKey.PRT);
-                                Console.WriteLine($"    PRT              : {aadKey.PRTRefreshToken}");
-                                Console.WriteLine($"    PRT Random Ctx   : {aadKey.Ctx.Hex()}");
-                                Console.WriteLine($"    PRT Derived Key  : {aadKey.PopSessionKey.Hex()}");
-                            }
-
-                            if (aadKey.PartialTGT != null) {
-                                Console.WriteLine($"    Partial TGT      :\n {aadKey.PartialTGT}");
-                            }
+                            aadKey.GetPRT(protector, systemKeyProvider, deviceKey, deviceCert, prtOptions.KDFv1);          
                         }
+                        PrintPRTInfo(aadKey);
                     }
                 }
             }

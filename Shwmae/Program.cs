@@ -369,7 +369,7 @@ namespace Shwmae {
                         }
 
                         ctx.Revert();
-                        aadKey.RenewPRT(prtOptions.SessionKey, prtOptions.PRT);
+                        aadKey.RenewPRT(prtOptions.SessionKey, prtOptions.PRT, prtOptions.KDFv1);
                         PrintPRTInfo(aadKey);
 
                     } else {

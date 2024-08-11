@@ -48,7 +48,7 @@ namespace Shwmae {
         [Option('r', "renew", Required = false, HelpText = "Generate a new random context and derived key using the Azure device transport certificate")]
         public bool Renew { get; set; }
 
-        [Option("kdfv1", Required = false, HelpText = "Use KDFv1 signing algorithm instead of KDFv2", Default = true)]
+        [Option("kdfv1", Required = false, HelpText = "Use KDFv1 signing algorithm instead of KDFv2", Default = false)]
         public bool KDFv1 { get; set; }
 
         [Option("session-key", Required = false, HelpText = "Session key from initial PRT response")]

@@ -19,6 +19,7 @@ using System.Runtime.InteropServices;
 using Kerberos.NET.Crypto;
 using Kerberos.NET.Entities;
 using BCrypt;
+using Jose;
 
 
 namespace Shwmae.Ngc.Keys {
@@ -123,7 +124,13 @@ namespace Shwmae.Ngc.Keys {
             }            
         }
 
-        byte[] GetDerivedKeyFromSessionKey(string ctx, byte[] encryptedKey) {
+        byte[] GetDerivedKeyFromSessionKey(byte[] ctx, byte[] jwt, byte[] encryptedKey) {
+            var sha256 = SHA256.Create();
+            var ctxv2 = sha256.ComputeHash(ctx.Concat(jwt).ToArray());
+            return GetDerivedKeyFromSessionKey(ctxv2, encryptedKey);
+        }
+
+        byte[] GetDerivedKeyFromSessionKey(byte[] ctx, byte[] encryptedKey) {
 
             SECURITY_STATUS status;
 
@@ -139,7 +146,7 @@ namespace Shwmae.Ngc.Keys {
 
                     var buffers = new NCryptBuffer[] {
                         new NCryptBuffer (BufferType.KDF_LABEL, Encoding.UTF8.GetBytes("AzureAD-SecureConversation")),
-                        new NCryptBuffer (BufferType.KDF_CONTEXT, Convert.FromBase64String(ctx)),
+                        new NCryptBuffer (BufferType.KDF_CONTEXT, ctx),
                         new NCryptBuffer (BufferType.KDF_HASH_ALGORITHM, Encoding.Unicode.GetBytes("SHA256\0"))                
                     };
 
@@ -149,7 +156,7 @@ namespace Shwmae.Ngc.Keys {
                         desc.pBuffers = buffAddress;
                         
                         if((status = NgcInterop.NCryptKeyDerivation(derivationKey, &desc, derivedKey, derivedKey.Length, out var written, 0)) != SECURITY_STATUS.ERROR_SUCCESS) {
-                            throw new CryptographicException($"Failed to derive session key for ctx {ctx}: 0x{status:x}");
+                            throw new CryptographicException($"Failed to derive session key for ctx {ctx.Hex()}: 0x{status:x}");
                         }
 
                         return derivedKey;
@@ -227,7 +234,34 @@ namespace Shwmae.Ngc.Keys {
             }
         }
 
-        public void RenewPRT(string sessionKey, string refreshToken) {
+        public string GeneratePRTRenewalJWT(string nonce, string prtRefreshToken, bool kdfv1, byte[] secret) {
+
+            var builder = JwtBuilder.Create()
+ 
+                .AddHeader("ctx", Convert.ToBase64String(Ctx))
+                .AddHeader("kdf_ver", kdfv1 ? 1 : 2)
+
+                .AddClaim("request_nonce", nonce)
+                .AddClaim("scope", "openid aza ugs")
+                .AddClaim("win_ver", "10.0.22621.2792")
+                .AddClaim("grant_type", "refresh_token")
+                .AddClaim("iss", "aad:brokerplugin")
+                .AddClaim("group_sids", new string[] { })
+                .AddClaim("client_id", "38aa3b87-a06d-4817-b275-7a316988d93b")
+                .AddClaim("refresh_token", prtRefreshToken)
+                .AddClaim("previous_refresh_token", prtRefreshToken);
+                      
+            if(secret == null) {
+                return builder.WithAlgorithm(new NoneAlgorithm())
+                        .Encode();
+            } else {
+                return builder.WithAlgorithm(new HMACSHA256Algorithm())
+                        .WithSecret(secret)
+                        .Encode();
+            }           
+        }
+
+        public void RenewPRT(string sessionKey, string refreshToken, bool kdfv1) {
 
             Ctx = new byte[24];
             PRTRefreshToken = refreshToken;
@@ -240,41 +274,28 @@ namespace Shwmae.Ngc.Keys {
                 .Result.Content.ReadAsStringAsync().Result;
 
             var obj = JsonConvert.DeserializeObject<dynamic>(response);
-            string prtRenewJWT = null;   
+            JwtBuilder prtRenewJWT = null;
             new Random().NextBytes(Ctx);
             var dateTimeProvider = new UtcDateTimeProvider();
 
             using (var impersonteCtx = Utils.Impersonate("SYSTEM")) {
-                DerivedSessionKey = GetDerivedKeyFromSessionKey(Convert.ToBase64String(Ctx), Utils.Base64Url(sessionKey));
+                if (!kdfv1) {
+                    var tmpJWT = GeneratePRTRenewalJWT((string)obj.Nonce, PRTRefreshToken, kdfv1, null);
+                    DerivedSessionKey = GetDerivedKeyFromSessionKey(Ctx, Utils.Base64Url(tmpJWT.Split('.')[1]), EncryptedPopSessionKey);
+                } else {
+                    DerivedSessionKey = GetDerivedKeyFromSessionKey(Ctx, EncryptedPopSessionKey);
+                }
             }
+                                   
+            var jwtToken = GeneratePRTRenewalJWT((string)obj.Nonce, PRTRefreshToken, kdfv1, DerivedSessionKey);
 
-            prtRenewJWT = JwtBuilder.Create()
-                        .AddHeader("ctx", Convert.ToBase64String(Ctx))
-                        .AddHeader("kdf_ver", "1")
-
-                        .AddClaim("request_nonce", (string)obj.Nonce)
-                        .AddClaim("scope", "openid aza ugs")
-                        .AddClaim("win_ver", "10.0.22621.2792")
-                        .AddClaim("grant_type", "refresh_token")
-                        .AddClaim("iss", "aad:brokerplugin")
-                        .AddClaim("group_sids", new string[] { })
-                        .AddClaim("client_id", "38aa3b87-a06d-4817-b275-7a316988d93b")
-                        .AddClaim("refresh_token", PRTRefreshToken)
-                        .AddClaim("previous_refresh_token", PRTRefreshToken)
-
-                        .WithAlgorithm(new HMACSHA256Algorithm())
-                        .WithDateTimeProvider(dateTimeProvider)
-                        .WithSecret(DerivedSessionKey)
-                        .Encode();
-        
-     
             response = httpClient.PostAsync(tokenURL,
-                new FormUrlEncodedContent(new KeyValuePair<string, string>[] {
-                new KeyValuePair<string, string>("request", prtRenewJWT),
-                new KeyValuePair<string, string>("windows_api_version", "2.2"),
-                new KeyValuePair<string, string>("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
-                new KeyValuePair<string, string>("client_info", "1"),
-                new KeyValuePair<string, string>("tgt", "true"),
+                    new FormUrlEncodedContent(new KeyValuePair<string, string>[] {
+                    new KeyValuePair<string, string>("request", jwtToken),
+                    new KeyValuePair<string, string>("windows_api_version", "2.2"),
+                    new KeyValuePair<string, string>("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+                    new KeyValuePair<string, string>("client_info", "1"),
+                    new KeyValuePair<string, string>("tgt", "true"),
                 }))
                 .Result.Content.ReadAsStringAsync().Result;
 
@@ -282,7 +303,7 @@ namespace Shwmae.Ngc.Keys {
             var token = Jose.JweToken.FromString(response);
 
             using (var impersonteCtx = Utils.Impersonate("SYSTEM")) {
-                DerivedSessionKey = GetDerivedKeyFromSessionKey((string)key["ctx"], Utils.Base64Url(sessionKey));
+                DerivedSessionKey = GetDerivedKeyFromSessionKey(Convert.FromBase64String((string)key["ctx"]), EncryptedPopSessionKey);
             }
 
             byte[] decryptedData;
@@ -344,13 +365,13 @@ namespace Shwmae.Ngc.Keys {
 
                     Ctx = new byte[24];
                     new Random().NextBytes(Ctx);
-                    DerivedSessionKey = GetDerivedKeyFromSessionKey(Convert.ToBase64String(Ctx), EncryptedPopSessionKey);
+                    DerivedSessionKey = GetDerivedKeyFromSessionKey(Ctx, EncryptedPopSessionKey);
                     byte[] tgtSessionKey;
 
                     if (!renewal) {
                         var tgt_key = Jose.JWT.Headers((string)tgt_ad.clientKey);
                         var tgt_token = Jose.JweToken.FromString((string)tgt_ad.clientKey);
-                        var tgtpopSessionKey = GetDerivedKeyFromSessionKey((string)tgt_key["ctx"], EncryptedPopSessionKey);
+                        var tgtpopSessionKey = GetDerivedKeyFromSessionKey(Convert.FromBase64String((string)tgt_key["ctx"]), EncryptedPopSessionKey);
                         var decryptedTPMSessionKey = DecryptSessionKey(EncryptedPopSessionKey);
                         tgtSessionKey = Utils.AesDecrypt(tgt_token.Ciphertext, tgtpopSessionKey, tgt_token.Iv);
                     } else {

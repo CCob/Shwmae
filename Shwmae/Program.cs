@@ -369,7 +369,7 @@ namespace Shwmae {
                         }
 
                         ctx.Revert();
-                        aadKey.RenewPRT(prtOptions.SessionKey, prtOptions.PRT, prtOptions.KDFv1);
+                        aadKey.RenewPRT(prtOptions.SessionKey, prtOptions.PRT, prtOptions.KDFv1 > 0);
                         PrintPRTInfo(aadKey);
 
                     } else {
@@ -387,7 +387,7 @@ namespace Shwmae {
 
                         ctx.Revert();
                         using (var systemCtx = Utils.Impersonate("SYSTEM")) {
-                            aadKey.GetPRT(protector, systemKeyProvider, deviceKey, deviceCert, prtOptions.KDFv1);          
+                            aadKey.GetPRT(protector, systemKeyProvider, deviceKey, deviceCert, prtOptions.KDFv1 > 0);          
                         }
                         PrintPRTInfo(aadKey);
                     }

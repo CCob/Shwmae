@@ -15,7 +15,7 @@ namespace Shwmae {
         [Option("sid", Required = false, HelpText = "Specify a specific account SID to work with")]
         public string SID { get; set; }
 
-        [Option("recovery-token", Required = false, HelpText = "Azure AD access token for cred.microsoft.com resource (used for decrypting recovery keys)")]
+        [Option("recovery-token", Required = false, HelpText = "Azure AD access token issued for client 29d9ed98-a469-4536-ade2-f981bc1d605e resource https://cred.microsoft.com/ and callback ms-appx-web://Microsoft.AAD.BrokerPlugin/DRS")]
         public string RecoveryToken { get; set; }
 
         [Option("container-path", Required = false, HelpText = "Enumerate Windows Hello containers from a specific folder")]

@@ -43,7 +43,7 @@ namespace Shwmae {
                         }
 
                     } else {
-                        Console.WriteLine($"  Recovery Key          : Use /token argument to decrypt recovery key");
+                        Console.WriteLine($"  Recovery Key          : Use --recovery-token argument to decrypt recovery key");
                     }
                 }
 

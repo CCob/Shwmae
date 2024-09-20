@@ -7,7 +7,12 @@ namespace Shwmae.Ngc.Protectors {
     {
         //makes call to POST cred.microsoft.com/unprotectsecret/v1
         //response is sent to CryptUnprotectData with local machine DPAPI key
-        //decrypted DPAPI blob is used as AES key for EncryptedProtector 
+        //decrypted DPAPI blob is used as AES key for EncryptedProtector.
+        //
+        // Access token requirements 
+        // Client  : 29d9ed98-a469-4536-ade2-f981bc1d605e
+        // Resource: https://cred.microsoft.com/
+        // Callback: ms-appx-web://Microsoft.AAD.BrokerPlugin/DRS 
 
         public override ProtectorType ProtectorType => ProtectorType.Recovery;
 

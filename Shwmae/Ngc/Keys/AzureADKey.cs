@@ -359,7 +359,7 @@ namespace Shwmae.Ngc.Keys {
             
             var tgt_ad = JsonConvert.DeserializeObject<dynamic>((string)prt.tgt_ad);
 
-            if (tgt_ad != null) {
+            if (tgt_ad != null && tgt_ad.clientKey != null) {
 
                 using (var impersonteCtx = Utils.Impersonate("SYSTEM")) {
 
@@ -396,6 +396,16 @@ namespace Shwmae.Ngc.Keys {
                     krbCredInfo.SRealm = krbCredObj.Realm;
 
                     PartialTGT = Convert.ToBase64String(KrbCred.WrapTicket(asRep.Ticket, krbCredInfo).EncodeApplication().ToArray());
+                }
+            }
+            else
+            {
+                // We still want to have a Ctx + derived key combination as long as KDFv1 works
+                using (var impersonteCtx = Utils.Impersonate("SYSTEM"))
+                {
+                    Ctx = new byte[24];
+                    new Random().NextBytes(Ctx);
+                    DerivedSessionKey = GetDerivedKeyFromSessionKey(Ctx, EncryptedPopSessionKey);
                 }
             }
         }

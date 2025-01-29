@@ -161,8 +161,16 @@ namespace Shwmae.Vault {
         }
 
         public static IEnumerable<Credential> GetCredentials(string path) {
-            return Directory.GetFiles(path, "*.vcrd")
-                .Select(credFile => new Credential(credFile));            
+            var files = Directory.GetFiles(path, "*.vcrd");
+            var creds = new List<Credential>();
+            foreach (var file in files) {
+                try  {
+                    var c = new Credential(file);
+                    creds.Add(c);
+                } 
+                catch { }
+            }
+            return creds;            
         }
     }
 }
